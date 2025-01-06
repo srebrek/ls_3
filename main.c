@@ -10,10 +10,17 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <errno.h>
+#include <time.h>
 
 #define ERR(source) (perror(source), fprintf(stderr, "%s:%d\n", __FILE__, __LINE__), exit(EXIT_FAILURE))
 #define MAX_LENGTH 256
 #define LETTERS 52
+
+typedef unsigned int UINT;
+
+typedef struct timespec timespec_t;
 
 typedef struct worker_args {
     pthread_t tid;
@@ -24,10 +31,19 @@ typedef struct worker_args {
     pthread_mutex_t *mxLetterCount;
 } worker_args_t;
 
+typedef struct manager_args {
+    pthread_t tid;
+    int *letterCount;
+    pthread_mutex_t *mxLetterCount;
+    sigset_t *mask;
+} manager_args_t;
+
 void readArguments(int argc, char **argv, char *workingDirPath, int *threadCount);
 void walkThroughDirectory(const char *dirPath, circular_buffer *buffer, int *fileCount);
 void *worker(void *args);
 void countLetters(const char *path, int *letterCount, pthread_mutex_t *mxLetterCount);
+void *manager(void *args);
+void msleep(UINT milisec);
 
 int main(int argc, char *argv[]) {
     int threadCount;
@@ -56,16 +72,37 @@ int main(int argc, char *argv[]) {
         workersArgs[i].mxLetterCount = mxLetterCount;
     }
 
+    sigset_t oldMask, newMask;
+    sigemptyset(&newMask);
+    sigaddset(&newMask, SIGUSR1);
+    if (pthread_sigmask(SIG_BLOCK, &newMask, &oldMask))
+        ERR("SIG_BLOCK error");
+
     for (int i = 0; i < threadCount; i++)
     {
         if (pthread_create(&workersArgs[i].tid, NULL, worker, &workersArgs[i]) != 0)
             ERR("pthread_create");
     }
 
+    manager_args_t *managerArgs = malloc(sizeof(manager_args_t));
+    if (managerArgs == NULL)
+        ERR("malloc");
+
+    managerArgs->letterCount = letterCount;
+    managerArgs->mxLetterCount = mxLetterCount;
+    managerArgs->mask = &newMask;
+    
+    if (pthread_create(&managerArgs->tid, NULL, manager, managerArgs) != 0)
+        ERR("pthread_create");
+
     walkThroughDirectory(workingDirPath, buffer, &fileCount);
+
+    printf("chodzenie skonczone\n");
 
     while (true)
     {
+        if (kill(getpid(), SIGUSR1) == -1)
+            ERR("kill");
         pthread_mutex_lock(&mxResults);
         if (results == fileCount)
         {
@@ -73,6 +110,7 @@ int main(int argc, char *argv[]) {
             break;
         }
         pthread_mutex_unlock(&mxResults);
+        msleep(100);
     }
 
     for (int i = 0; i < threadCount; i++) {
@@ -87,9 +125,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    for (int i = 0; i < LETTERS; i++) {
-        printf("%c: %d\n", i < 26 ? 'a' + i : 'A' + i - 26, letterCount[i]);
-    }
+    // for (int i = 0; i < LETTERS; i++) {
+    //     printf("%c: %d\n", i < 26 ? 'a' + i : 'A' + i - 26, letterCount[i]);
+    // }
 
     while (buffer->count > 0) {
         char *item = circular_buffer_dequeue(buffer);
@@ -194,6 +232,7 @@ void countLetters(const char *path, int *letterCount, pthread_mutex_t *mxLetterC
             letterCount[letter]++;
             pthread_mutex_unlock(&mxLetterCount[letter]);
         }
+        msleep(10);
     }
 
     if (bytesRead == -1)
@@ -201,4 +240,46 @@ void countLetters(const char *path, int *letterCount, pthread_mutex_t *mxLetterC
 
     if (close(fd) == -1)
         ERR("close");
+}
+
+void *manager(void *args)
+{
+    printf("Manager started\n");
+    manager_args_t *managerArgs = (manager_args_t *)args;
+    while (true)
+    {
+        printf("Manager is waiting for SIGUSR1\n");
+        int sig;
+        if (sigwait(managerArgs->mask, &sig))
+            ERR("sigwait");
+        if (sig == SIGUSR1)
+        {
+            printf("Manager received SIGUSR1\n");
+            for (int i = 0; i < LETTERS; i++)
+            {
+                pthread_mutex_lock(&managerArgs->mxLetterCount[i]);
+            }
+            for (int i = 0; i < LETTERS; i++)
+            {
+                printf("%c: %d\n", i < 26 ? 'a' + i : 'A' + i - 26, managerArgs->letterCount[i]);
+            }
+            for (int i = 0; i < LETTERS; i++)
+            {
+                pthread_mutex_unlock(&managerArgs->mxLetterCount[i]);
+            }
+        }
+    }
+
+    return NULL;
+}
+
+void msleep(UINT milisec)
+{
+    time_t sec = (int)(milisec / 1000);
+    milisec = milisec - (sec * 1000);
+    timespec_t req = {0};
+    req.tv_sec = sec;
+    req.tv_nsec = milisec * 1000000L;
+    if (nanosleep(&req, &req))
+        ERR("nanosleep");
 }
