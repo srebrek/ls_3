@@ -7,20 +7,27 @@
 #include <unistd.h>
 #include "circular_buffer.h"
 #include <dirent.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #define ERR(source) (perror(source), fprintf(stderr, "%s:%d\n", __FILE__, __LINE__), exit(EXIT_FAILURE))
 #define MAX_LENGTH 256
+#define LETTERS 52
 
 typedef struct worker_args {
     pthread_t tid;
     circular_buffer *buffer;
     pthread_mutex_t *mxProcessedCount;
     int *processedCount;
+    int *letterCount;
+    pthread_mutex_t *mxLetterCount;
 } worker_args_t;
 
 void readArguments(int argc, char **argv, char *workingDirPath, int *threadCount);
 void walkThroughDirectory(const char *dirPath, circular_buffer *buffer, int *fileCount);
 void *worker(void *args);
+void countLetters(const char *path, int *letterCount, pthread_mutex_t *mxLetterCount);
 
 int main(int argc, char *argv[]) {
     int threadCount;
@@ -33,6 +40,8 @@ int main(int argc, char *argv[]) {
     if (workersArgs == NULL)
         ERR("malloc");
 
+    int letterCount[LETTERS] = {0};
+    pthread_mutex_t mxLetterCount[LETTERS] = PTHREAD_MUTEX_INITIALIZER;
     circular_buffer *buffer = circular_buffer_init();
     int results = 0;
     int fileCount = 0;
@@ -43,6 +52,8 @@ int main(int argc, char *argv[]) {
         workersArgs[i].buffer = buffer;
         workersArgs[i].mxProcessedCount = &mxResults;
         workersArgs[i].processedCount = &results;
+        workersArgs[i].letterCount = letterCount;
+        workersArgs[i].mxLetterCount = mxLetterCount;
     }
 
     for (int i = 0; i < threadCount; i++)
@@ -74,6 +85,10 @@ int main(int argc, char *argv[]) {
             circular_buffer_deinit(buffer);
             ERR("pthread_join");
         }
+    }
+
+    for (int i = 0; i < LETTERS; i++) {
+        printf("%c: %d\n", i < 26 ? 'a' + i : 'A' + i - 26, letterCount[i]);
     }
 
     while (buffer->count > 0) {
@@ -151,6 +166,8 @@ void *worker(void *args)
         }
 
         fprintf(stderr, "Witam, jestem pracownikiem %ld reprezentuje plik %s\n", workerArgs->tid, strrchr(item, '/') + 1);
+        countLetters(item, workerArgs->letterCount, workerArgs->mxLetterCount);
+        fprintf(stderr, "Pracownik %ld zakonczyl prace nad plikiem %s\n", workerArgs->tid, strrchr(item, '/') + 1);
         pthread_mutex_lock(workerArgs->mxProcessedCount);
         (*workerArgs->processedCount)++;
         pthread_mutex_unlock(workerArgs->mxProcessedCount);
@@ -160,4 +177,28 @@ void *worker(void *args)
     }
 
     return NULL;
+}
+
+void countLetters(const char *path, int *letterCount, pthread_mutex_t *mxLetterCount)
+{
+    int fd = open(path, O_RDONLY);
+    if(fd == -1)
+        ERR("Cannot open file");
+
+    char buffer;
+    ssize_t bytesRead;
+    while ((bytesRead = read(fd, &buffer, 1)) > 0) {
+        int letter = buffer - 'a';
+        if (letter >= 0 && letter < 26) {
+            pthread_mutex_lock(&mxLetterCount[letter]);
+            letterCount[letter]++;
+            pthread_mutex_unlock(&mxLetterCount[letter]);
+        }
+    }
+
+    if (bytesRead == -1)
+        ERR("read");
+
+    if (close(fd) == -1)
+        ERR("close");
 }
