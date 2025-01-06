@@ -14,8 +14,8 @@
 typedef struct worker_args {
     pthread_t tid;
     circular_buffer *buffer;
-    pthread_mutex_t *mxResults;
-    int *results;
+    pthread_mutex_t *mxProcessedCount;
+    int *processedCount;
 } worker_args_t;
 
 void readArguments(int argc, char **argv, char *workingDirPath, int *threadCount);
@@ -41,8 +41,8 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < threadCount; i++)
     {
         workersArgs[i].buffer = buffer;
-        workersArgs[i].mxResults = &mxResults;
-        workersArgs[i].results = &results;
+        workersArgs[i].mxProcessedCount = &mxResults;
+        workersArgs[i].processedCount = &results;
     }
 
     for (int i = 0; i < threadCount; i++)
@@ -151,9 +151,9 @@ void *worker(void *args)
         }
 
         fprintf(stderr, "Witam, jestem pracownikiem %ld reprezentuje plik %s\n", workerArgs->tid, strrchr(item, '/') + 1);
-        pthread_mutex_lock(workerArgs->mxResults);
-        (*workerArgs->results)++;
-        pthread_mutex_unlock(workerArgs->mxResults);
+        pthread_mutex_lock(workerArgs->mxProcessedCount);
+        (*workerArgs->processedCount)++;
+        pthread_mutex_unlock(workerArgs->mxProcessedCount);
 
         free(item);
         //sleep(1);
